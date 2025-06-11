@@ -554,7 +554,6 @@ const NextKickApp = () => {
       </div>
     </div>
   );
-};
 
 };
 
