@@ -15,6 +15,7 @@ const NextKickApp = () => {
   const [globalQueue, setGlobalQueue] = useState([]);
   const [timers, setTimers] = useState({});
   const [timerEnded, setTimerEnded] = useState({});
+  const [timersPaused, setTimersPaused] = useState({});
   const [pendingResults, setPendingResults] = useState({}); // Store results before processing
 
   // Timer effect for all fields
@@ -22,7 +23,7 @@ const NextKickApp = () => {
     const intervals = {};
     
     fields.forEach(field => {
-      if (field.currentMatch && timers[field.id] > 0) {
+      if (field.currentMatch && timers[field.id] > 0 && !timersPaused[field.id]) {
         intervals[field.id] = setInterval(() => {
           setTimers(prev => {
             const newTime = (prev[field.id] || 0) - 1;
@@ -45,7 +46,7 @@ const NextKickApp = () => {
     return () => {
       Object.values(intervals).forEach(interval => clearInterval(interval));
     };
-  }, [fields, timers]);
+  }, [fields, timers, timersPaused]);
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -196,6 +197,10 @@ const NextKickApp = () => {
   const extendTime = (fieldId, minutes) => {
     setTimers(prev => ({ ...prev, [fieldId]: (prev[fieldId] || 0) + (minutes * 60) }));
     setTimerEnded(prev => ({ ...prev, [fieldId]: false }));
+  };
+
+  const togglePauseTimer = (fieldId) => {
+    setTimersPaused(prev => ({ ...prev, [fieldId]: !prev[fieldId] }));
   };
 
   // Process all pending results in the correct order
@@ -381,6 +386,7 @@ const NextKickApp = () => {
     setFields(prev => prev.map(field => ({ ...field, currentMatch: null, defendingTeam: null })));
     setTimers({});
     setTimerEnded({});
+    setTimersPaused({});
     setPendingResults({});
   };
 
@@ -399,6 +405,50 @@ const NextKickApp = () => {
     const newQueue = [...globalQueue];
     [newQueue[currentIndex], newQueue[newIndex]] = [newQueue[newIndex], newQueue[currentIndex]];
     setGlobalQueue(newQueue);
+  };
+
+  const removeTeam = (teamId) => {
+    console.log('=== REMOVE TEAM FUNCTION CALLED ===');
+    console.log('Team ID to remove:', teamId);
+    
+    const team = teams.find(t => t.id === teamId);
+    console.log('Found team to remove:', team);
+    
+    if (!team) {
+      console.log('ERROR: Team not found!');
+      alert('Team not found!');
+      return;
+    }
+
+    console.log('✅ REMOVING TEAM IMMEDIATELY (no confirmation)');
+    
+    // Remove from teams state
+    setTeams(currentTeams => {
+      console.log('BEFORE removal - teams:', currentTeams.map(t => t.name));
+      const newTeams = currentTeams.filter(t => t.id !== teamId);
+      console.log('AFTER removal - teams:', newTeams.map(t => t.name));
+      return newTeams;
+    });
+    
+    // Remove from queue
+    setGlobalQueue(currentQueue => {
+      console.log('BEFORE queue removal:', currentQueue.map(t => t.name));
+      const newQueue = currentQueue.filter(t => t.id !== teamId);
+      console.log('AFTER queue removal:', newQueue.map(t => t.name));
+      return newQueue;
+    });
+    
+    // Clear defending teams if this team was defending
+    setFields(prev => prev.map(field => {
+      if (field.defendingTeam?.id === teamId) {
+        console.log(`Clearing defending team ${field.defendingTeam.name} from ${field.name}`);
+        return { ...field, defendingTeam: null };
+      }
+      return field;
+    }));
+    
+    console.log('=== TEAM REMOVAL COMPLETED ===');
+    console.log(`✅ Team "${team.name}" has been removed!`);
   };
 
   const getGameModeDescription = () => {
@@ -453,32 +503,6 @@ const NextKickApp = () => {
           <p className="text-white/80">Staff Timer-Based Management System</p>
           <p className="text-white/60 text-sm mt-1">Time-based matches • Staff declares winners • Pure timer management</p>
         </div>
-
-        {/* Process All Results Button - Show when multiple fields have timers ended */}
-        {Object.keys(pendingResults).length > 0 && (
-          <div className="mt-6 text-center">
-            <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 border border-white/20 inline-block">
-              <div className="text-white mb-3">
-                <div className="font-semibold">
-                  {Object.keys(pendingResults).length} field(s) awaiting processing
-                </div>
-                <div className="text-sm text-white/70">
-                  {allResultsSelected() 
-                    ? "All winners selected - ready to process" 
-                    : "Select winners from all expired fields before processing"
-                  }
-                </div>
-              </div>
-              <button
-                onClick={processAllPendingResults}
-                disabled={!allResultsSelected()}
-                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors font-semibold"
-              >
-                Process All Results
-              </button>
-            </div>
-          </div>
-        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
           {/* Team Registration & Controls */}
@@ -618,15 +642,75 @@ const NextKickApp = () => {
             {/* Team List */}
             <div className="mt-4">
               <h3 className="text-white font-medium mb-2">Teams ({teams.length})</h3>
+              
+              {/* Team Removal Dropdown */}
+              {teams.length > 0 && (
+                <div className="mb-3">
+                  <select
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        console.log('Dropdown selected team ID:', e.target.value);
+                        const teamId = Number(e.target.value);
+                        const team = teams.find(t => t.id === teamId);
+                        console.log('Found team to remove:', team);
+                        removeTeam(teamId);
+                        e.target.value = ''; // Reset dropdown
+                      }
+                    }}
+                    className="w-full px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-red-400 cursor-pointer"
+                    defaultValue=""
+                  >
+                    <option value="" disabled className="bg-gray-800">🗑️ Select team to remove ({teams.length} teams)</option>
+                    {teams.map(team => {
+                      const isPlaying = fields.some(field => 
+                        field.currentMatch && 
+                        (field.currentMatch.team1.id === team.id || field.currentMatch.team2.id === team.id)
+                      );
+                      const isDefending = fields.some(field => field.defendingTeam?.id === team.id);
+                      
+                      let status = "";
+                      if (isPlaying) status = " (PLAYING)";
+                      else if (isDefending) status = " (DEFENDING)";
+                      
+                      return (
+                        <option key={team.id} value={team.id} className="bg-gray-800">
+                          ❌ {team.name}{status}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+
               <div className="space-y-1 max-h-32 overflow-y-auto">
-                {teams.map(team => (
-                  <div key={team.id} className="flex justify-between items-center bg-white/10 rounded-lg px-3 py-2">
-                    <span className="text-white font-medium text-sm">{team.name}</span>
-                    <span className="text-white/70 text-xs">
-                      {team.wins}W-{team.losses}L-{team.draws}D
-                    </span>
-                  </div>
-                ))}
+                {teams.map(team => {
+                  // Check if team is currently playing
+                  const isPlaying = fields.some(field => 
+                    field.currentMatch && 
+                    (field.currentMatch.team1.id === team.id || field.currentMatch.team2.id === team.id)
+                  );
+                  // Check if team is defending
+                  const isDefending = fields.some(field => field.defendingTeam?.id === team.id);
+                  
+                  return (
+                    <div key={team.id} className="flex justify-between items-center bg-white/10 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-white font-medium text-sm">{team.name}</span>
+                        {isPlaying && (
+                          <span className="text-xs bg-blue-500 px-2 py-1 rounded text-white">PLAYING</span>
+                        )}
+                        {isDefending && (
+                          <span className="text-xs bg-yellow-500 px-2 py-1 rounded text-black">DEFENDING</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/70 text-xs">
+                          {team.wins}W-{team.losses}L-{team.draws}D
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -677,9 +761,13 @@ const NextKickApp = () => {
                         timers[field.id] <= 60 ? 'text-yellow-400' : 'text-white'
                       }`}>
                         {formatTime(timers[field.id] || 0)}
+                        {timersPaused[field.id] && (
+                          <span className="text-orange-400 text-lg ml-2">⏸️ PAUSED</span>
+                        )}
                       </div>
                       <div className="text-white/70 text-sm">
-                        {isTimeUp ? 'Time Ended - Declare Winner' : 'Time Remaining'}
+                        {isTimeUp ? 'Time Ended - Declare Winner' : 
+                         timersPaused[field.id] ? 'Timer Paused' : 'Time Remaining'}
                       </div>
                     </div>
 
@@ -705,16 +793,23 @@ const NextKickApp = () => {
                           +1 Min
                         </button>
                         <button
-                          onClick={() => extendTime(field.id, 2)}
-                          className="px-2 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-xs"
+                          onClick={() => togglePauseTimer(field.id)}
+                          className={`px-2 py-1 text-white rounded-lg transition-colors text-xs font-semibold ${
+                            timersPaused[field.id] 
+                              ? 'bg-green-500 hover:bg-green-600' 
+                              : 'bg-orange-500 hover:bg-orange-600'
+                          }`}
                         >
-                          +2 Min
+                          {timersPaused[field.id] ? '▶️ Resume' : '⏸️ Pause'}
                         </button>
                         <button
-                          onClick={() => extendTime(field.id, 5)}
-                          className="px-2 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-xs"
+                          onClick={() => {
+                            setTimers(prev => ({ ...prev, [field.id]: 0 }));
+                            setTimerEnded(prev => ({ ...prev, [field.id]: true }));
+                          }}
+                          className="px-2 py-1 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-xs font-semibold"
                         >
-                          +5 Min
+                          End Match
                         </button>
                       </div>
                     )}
@@ -842,6 +937,30 @@ const NextKickApp = () => {
               </div>
             );
           })}
+
+          {/* Process All Results Button - Above Global Queue */}
+          {Object.keys(pendingResults).length > 0 && (
+            <div className="bg-gradient-to-r from-blue-600 to-purple-600 backdrop-blur-md rounded-xl p-4 border border-white/20 shadow-lg">
+              <div className="text-white mb-3">
+                <div className="text-lg font-bold">
+                  ⏰ {Object.keys(pendingResults).length} Field(s) Awaiting Processing
+                </div>
+                <div className="text-sm text-white/80">
+                  {allResultsSelected() 
+                    ? "✅ All winners selected - ready to process matches" 
+                    : "❌ Select winners from all expired fields before processing"
+                  }
+                </div>
+              </div>
+              <button
+                onClick={processAllPendingResults}
+                disabled={!allResultsSelected()}
+                className="w-full px-6 py-3 bg-white/20 hover:bg-white/30 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors font-bold border border-white/30"
+              >
+                🏆 Process All Results
+              </button>
+            </div>
+          )}
 
           {/* Queue Display */}
           <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
