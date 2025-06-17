@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Play, Square, Users, Clock, Trophy, Crown, RotateCcw, ArrowUp, ArrowDown } from 'lucide-react';
+import { Plus, Play, Square, Users, Clock, Trophy, Crown, RotateCcw, ArrowUp, ArrowDown, Timer, Bell } from 'lucide-react';
 
 const NextKickApp = () => {
   const [teams, setTeams] = useState([]);
   const [newTeamName, setNewTeamName] = useState('');
   const [matchDuration, setMatchDuration] = useState(5); // minutes
-  const [gameMode, setGameMode] = useState('winnerStays'); // winnerStays, overflow
+  const [gameMode, setGameMode] = useState('kingOfHill'); // winnerStays, overflow, kingOfHill
   const [overflowThreshold, setOverflowThreshold] = useState(6); // teams threshold for overflow mode
   const [fields, setFields] = useState([
     { id: 1, name: 'Field 1', currentMatch: null, queue: [], isActive: true },
@@ -14,6 +14,8 @@ const NextKickApp = () => {
   ]);
   const [globalQueue, setGlobalQueue] = useState([]);
   const [timers, setTimers] = useState({});
+  const [timerEnded, setTimerEnded] = useState({});
+  const [pendingResults, setPendingResults] = useState({}); // Store results before processing
 
   // Timer effect for all fields
   useEffect(() => {
@@ -25,8 +27,13 @@ const NextKickApp = () => {
           setTimers(prev => {
             const newTime = (prev[field.id] || 0) - 1;
             if (newTime <= 0) {
-              // Time's up - handle draw
-              setTimeout(() => handleMatchEnd(field.id, 'draw'), 100);
+              // Time's up - mark as ended but don't auto-complete
+              setTimerEnded(prevEnded => ({ ...prevEnded, [field.id]: true }));
+              // Play audio notification if available
+              try {
+                const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjOR2/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmEchzuI0+zNdi');
+                audio.play().catch(() => {}); // Ignore errors if audio doesn't work
+              } catch (e) {}
               return { ...prev, [field.id]: 0 };
             }
             return { ...prev, [field.id]: newTime };
@@ -86,7 +93,39 @@ const NextKickApp = () => {
     if (gameMode === 'overflow' && teams.length >= overflowThreshold) {
       return 'overflow';
     }
-    return 'winnerStays'; // Default to Winner Stays format
+    return gameMode; // kingOfHill, winnerStays, or overflow
+  };
+
+  const getNextFieldForWinner = (currentFieldId) => {
+    const currentMode = getCurrentGameMode();
+    
+    if (currentMode === 'overflow') {
+      return "back of queue"; // In overflow mode, winner goes to back of queue
+    }
+    
+    if (currentMode === 'winnerStays') {
+      // In winner stays mode, winner stays on the same field
+      return fields.find(f => f.id === currentFieldId)?.name || '';
+    }
+    
+    if (currentMode === 'kingOfHill') {
+      // In king of the hill mode with field hierarchy
+      const activeFields = getActiveFields();
+      const currentFieldIndex = activeFields.findIndex(f => f.id === currentFieldId);
+      
+      if (currentFieldIndex === -1) return "back of queue";
+      
+      // If this is the highest field (last in array), winner stays
+      if (currentFieldIndex === activeFields.length - 1) {
+        return activeFields[currentFieldIndex].name;
+      }
+      
+      // Otherwise, winner moves up to next field
+      const nextField = activeFields[currentFieldIndex + 1];
+      return nextField ? nextField.name : "back of queue";
+    }
+    
+    return "back of queue";
   };
 
   const startMatch = (fieldId) => {
@@ -108,39 +147,197 @@ const NextKickApp = () => {
       // Remove teams from global queue
       setGlobalQueue(prev => prev.filter(team => team.id !== team1.id && team.id !== team2.id));
       
-      // Start timer for this field
+      // Start timer for this field and clear any previous timer ended state
       setTimers(prev => ({ ...prev, [fieldId]: matchDuration * 60 }));
+      setTimerEnded(prev => ({ ...prev, [fieldId]: false }));
     }
   };
 
-  const scoreGoal = (fieldId, teamKey) => {
-    const field = fields.find(f => f.id === fieldId);
-    if (!field?.currentMatch || !timers[fieldId]) return;
+  const startAllMatches = () => {
+    const activeFields = getActiveFields();
+    const availableTeams = getNextAvailableTeams();
     
-    setFields(prev => prev.map(field => {
-      if (field.id !== fieldId) return field;
-      
-      const updated = { ...field };
-      updated.currentMatch[teamKey].score += 1;
-      
-      // Check if match should end (2 goals)
-      if (updated.currentMatch[teamKey].score >= 2) {
-        const winner = teamKey;
-        setTimeout(() => handleMatchEnd(fieldId, winner), 100);
+    if (availableTeams.length < activeFields.length * 2) {
+      alert(`Need ${activeFields.length * 2} teams to start all fields. Currently have ${availableTeams.length} available teams.`);
+      return;
+    }
+    
+    let teamIndex = 0;
+    activeFields.forEach(field => {
+      if (!field.currentMatch && teamIndex + 1 < availableTeams.length) {
+        const team1 = availableTeams[teamIndex];
+        const team2 = availableTeams[teamIndex + 1];
+        teamIndex += 2;
+        
+        setFields(prev => prev.map(f => 
+          f.id === field.id ? {
+            ...f,
+            currentMatch: {
+              team1: { ...team1, score: 0 },
+              team2: { ...team2, score: 0 },
+              startTime: Date.now()
+            }
+          } : f
+        ));
+        
+        // Start timer for this field
+        setTimers(prev => ({ ...prev, [field.id]: matchDuration * 60 }));
+        setTimerEnded(prev => ({ ...prev, [field.id]: false }));
       }
-      
-      return updated;
-    }));
+    });
+    
+    // Remove used teams from global queue
+    const usedTeams = availableTeams.slice(0, teamIndex);
+    setGlobalQueue(prev => prev.filter(team => 
+      !usedTeams.some(usedTeam => usedTeam.id === team.id)
+    ));
   };
 
-  const handleMatchEnd = useCallback((fieldId, result) => {
-    const field = fields.find(f => f.id === fieldId);
-    if (!field?.currentMatch) return;
+  const extendTime = (fieldId, minutes) => {
+    setTimers(prev => ({ ...prev, [fieldId]: (prev[fieldId] || 0) + (minutes * 60) }));
+    setTimerEnded(prev => ({ ...prev, [fieldId]: false }));
+  };
 
-    const { team1, team2 } = field.currentMatch;
+  // Process all pending results in the correct order
+  const processAllPendingResults = () => {
     const currentMode = getCurrentGameMode();
     
-    // Update team stats
+    if (currentMode === 'winnerStays') {
+      // For Winner Stays mode: winners stay on their fields, losers go to back of queue
+      const losersToQueue = [];
+      const fieldWinners = {}; // Store winners for each field
+      
+      Object.keys(pendingResults).forEach(fieldId => {
+        const { result, team1, team2 } = pendingResults[fieldId];
+        
+        let winner, loser;
+        if (result === 'draw') {
+          winner = team2; // Challenger wins on tie
+          loser = team1;
+        } else {
+          winner = result === 'team1' ? team1 : team2;
+          loser = result === 'team1' ? team2 : team1;
+        }
+        
+        // Update team stats
+        updateTeamStats(team1, team2, result);
+        
+        // Store winner for this field (they'll stay and defend)
+        fieldWinners[fieldId] = winner;
+        
+        // Loser goes to back of queue
+        losersToQueue.push(loser);
+      });
+      
+      // Update fields: put winners back on their fields for next match
+      setFields(prev => prev.map(field => {
+        if (fieldWinners[field.id]) {
+          return {
+            ...field,
+            currentMatch: null, // Clear current match, winner will be first to play next
+            defendingTeam: fieldWinners[field.id] // Mark who's defending this field
+          };
+        }
+        return { ...field, currentMatch: null };
+      }));
+      
+      // Add losers to back of global queue
+      setGlobalQueue(prev => [...prev, ...losersToQueue]);
+      
+      // For winner stays, we need to modify the startMatch function to prioritize defending teams
+      // This will be handled in the modified startMatch function below
+      
+    } else if (currentMode === 'kingOfHill') {
+      // Original King of Hill logic
+      const allWinners = [];
+      const allLosers = [];
+      const activeFields = getActiveFields();
+      
+      activeFields.forEach(field => {
+        if (pendingResults[field.id]) {
+          const { result, team1, team2 } = pendingResults[field.id];
+          
+          let winner, loser;
+          if (result === 'draw') {
+            winner = team2; // Challenger wins
+            loser = team1;
+          } else {
+            winner = result === 'team1' ? team1 : team2;
+            loser = result === 'team1' ? team2 : team1;
+          }
+          
+          updateTeamStats(team1, team2, result);
+          
+          const fieldIndex = activeFields.findIndex(f => f.id === field.id);
+          if (fieldIndex === activeFields.length - 1) {
+            allWinners.unshift(winner);
+          } else {
+            allWinners.unshift(winner);
+          }
+          
+          allLosers.push(loser);
+        }
+      });
+      
+      setGlobalQueue(prev => [...allWinners, ...prev, ...allLosers]);
+      setFields(prev => prev.map(field => ({ ...field, currentMatch: null, defendingTeam: null })));
+      
+    } else if (currentMode === 'overflow') {
+      // Original Overflow logic
+      const allLosers = [];
+      Object.keys(pendingResults).forEach(fieldId => {
+        const { result, team1, team2 } = pendingResults[fieldId];
+        updateTeamStats(team1, team2, result);
+        allLosers.push(team1, team2);
+      });
+      
+      setGlobalQueue(prev => [...prev, ...allLosers]);
+      setFields(prev => prev.map(field => ({ ...field, currentMatch: null, defendingTeam: null })));
+    }
+    
+    // Clear all pending results and timers
+    setPendingResults({});
+    setTimers({});
+    setTimerEnded({});
+  };
+
+  // Modified startMatch for Winner Stays mode
+  const startMatchWithDefender = (fieldId) => {
+    const field = fields.find(f => f.id === fieldId);
+    const currentMode = getCurrentGameMode();
+    
+    if (currentMode === 'winnerStays' && field?.defendingTeam) {
+      // Winner Stays mode: defending team vs next challenger
+      const availableTeams = getNextAvailableTeams();
+      if (availableTeams.length >= 1) {
+        const challenger = availableTeams[0];
+        
+        setFields(prev => prev.map(f => 
+          f.id === fieldId ? {
+            ...f,
+            currentMatch: {
+              team1: { ...field.defendingTeam, score: 0 }, // Defender
+              team2: { ...challenger, score: 0 }, // Challenger
+              startTime: Date.now()
+            },
+            defendingTeam: null // Clear defending team
+          } : f
+        ));
+        
+        // Remove challenger from global queue
+        setGlobalQueue(prev => prev.filter(team => team.id !== challenger.id));
+        
+        // Start timer
+        setTimers(prev => ({ ...prev, [fieldId]: matchDuration * 60 }));
+        setTimerEnded(prev => ({ ...prev, [fieldId]: false }));
+      }
+    } else {
+      // Normal match start for other modes or first matches
+      startMatch(fieldId);
+    }
+  };
+
+  const updateTeamStats = (team1, team2, result) => {
     setTeams(prevTeams => prevTeams.map(team => {
       if (team.id === team1.id) {
         if (result === 'team1') return { ...team, wins: team.wins + 1 };
@@ -154,37 +351,37 @@ const NextKickApp = () => {
       }
       return team;
     }));
+  };
 
-    // Handle queue logic based on current game mode
-    if (currentMode === 'overflow') {
-      // In overflow mode, both teams go to back of queue after every match
-      setGlobalQueue(prev => [...prev, team1, team2]);
-    } else {
-      // Winner Stays format - winner stays to defend, loser goes to back
-      if (result === 'draw') {
-        // If tied, newest team (challenger/team2) is deemed winner
-        setGlobalQueue(prev => [team2, ...prev, team1]);
-      } else {
-        const winner = result === 'team1' ? team1 : team2;
-        const loser = result === 'team1' ? team2 : team1;
-        // Winner stays on field (goes to front), loser goes to back
-        setGlobalQueue(prev => [winner, ...prev, loser]);
-      }
-    }
+  const handleMatchEnd = useCallback((fieldId, result) => {
+    const field = fields.find(f => f.id === fieldId);
+    if (!field?.currentMatch) return;
 
-    // Clear the match and timer for this field
-    setFields(prev => prev.map(field => 
-      field.id === fieldId ? { ...field, currentMatch: null } : field
-    ));
+    const { team1, team2 } = field.currentMatch;
     
-    setTimers(prev => ({ ...prev, [fieldId]: 0 }));
-  }, [fields, gameMode, teams.length, overflowThreshold]);
+    // Store the result instead of processing immediately
+    setPendingResults(prev => ({
+      ...prev,
+      [fieldId]: { result, team1, team2 }
+    }));
+  }, [fields]);
+
+  // Check if all expired timers have results selected
+  const allResultsSelected = () => {
+    const expiredFields = fields.filter(field => 
+      field.currentMatch && timerEnded[field.id]
+    );
+    
+    return expiredFields.every(field => pendingResults[field.id]);
+  };
 
   const resetApp = () => {
     setTeams([]);
     setGlobalQueue([]);
-    setFields(prev => prev.map(field => ({ ...field, currentMatch: null })));
+    setFields(prev => prev.map(field => ({ ...field, currentMatch: null, defendingTeam: null })));
     setTimers({});
+    setTimerEnded({});
+    setPendingResults({});
   };
 
   const shuffleQueue = () => {
@@ -217,15 +414,26 @@ const NextKickApp = () => {
             `• Active when ${overflowThreshold}+ teams present`
           ]
         };
-      default: // winnerStays
+      case 'winnerStays':
         return {
-          title: 'Winner Stays Format',
+          title: 'Winner Stays Format (Active)',
           rules: [
-            '• Winner stays on field to take on next team',
+            '• Winner stays on field to defend against next team',
             '• Loser goes to back of queue',
-            '• If tied: newest team (challenger) wins',
-            '• Game ends at 2 goals OR time limit',
-            '• Duration: 5-8 min based on player count'
+            '• If tied: challenger (newest team) wins',
+            '• Winners keep defending until they lose',
+            '• Staff declares winner when time ends'
+          ]
+        };
+      default: // kingOfHill
+        return {
+          title: 'King of the Hill Format',
+          rules: [
+            '• Winner moves up field hierarchy',
+            '• Loser goes to back of queue',
+            '• If tied: challenger wins and moves up',
+            '• Top field winner stays (defends crown)',
+            '• Staff declares winner when time ends'
           ]
         };
     }
@@ -242,9 +450,35 @@ const NextKickApp = () => {
             <Trophy className="text-yellow-300" size={40} />
             Winner Stays - Kraemer Fields
           </h1>
-          <p className="text-white/80">Pick-up soccer games in "Winner Stays" format</p>
-          <p className="text-white/60 text-sm mt-1">Organic soccer play • Free of coaches & referees • Pure freedom on the field</p>
+          <p className="text-white/80">Staff Timer-Based Management System</p>
+          <p className="text-white/60 text-sm mt-1">Time-based matches • Staff declares winners • Pure timer management</p>
         </div>
+
+        {/* Process All Results Button - Show when multiple fields have timers ended */}
+        {Object.keys(pendingResults).length > 0 && (
+          <div className="mt-6 text-center">
+            <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 border border-white/20 inline-block">
+              <div className="text-white mb-3">
+                <div className="font-semibold">
+                  {Object.keys(pendingResults).length} field(s) awaiting processing
+                </div>
+                <div className="text-sm text-white/70">
+                  {allResultsSelected() 
+                    ? "All winners selected - ready to process" 
+                    : "Select winners from all expired fields before processing"
+                  }
+                </div>
+              </div>
+              <button
+                onClick={processAllPendingResults}
+                disabled={!allResultsSelected()}
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors font-semibold"
+              >
+                Process All Results
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
           {/* Team Registration & Controls */}
@@ -298,6 +532,7 @@ const NextKickApp = () => {
                       onChange={(e) => setGameMode(e.target.value)}
                       className="px-3 py-1 bg-white/20 border border-white/30 rounded text-white focus:outline-none focus:ring-2 focus:ring-white/50"
                     >
+                      <option value="kingOfHill" className="bg-gray-800">King of the Hill</option>
                       <option value="winnerStays" className="bg-gray-800">Winner Stays</option>
                       <option value="overflow" className="bg-gray-800">Overflow</option>
                     </select>
@@ -355,6 +590,29 @@ const NextKickApp = () => {
                   Reset
                 </button>
               </div>
+
+              <button
+                onClick={startAllMatches}
+                disabled={(() => {
+                  const activeFields = getActiveFields();
+                  const availableTeams = getNextAvailableTeams();
+                  const fieldsWithoutMatches = activeFields.filter(f => !f.currentMatch);
+                  
+                  // For winner stays mode, we need different logic
+                  if (getCurrentGameMode() === 'winnerStays') {
+                    const fieldsNeedingChallengers = activeFields.filter(f => !f.currentMatch && f.defendingTeam);
+                    const fieldsNeedingFullMatch = activeFields.filter(f => !f.currentMatch && !f.defendingTeam);
+                    
+                    return availableTeams.length < (fieldsNeedingChallengers.length + fieldsNeedingFullMatch.length * 2);
+                  }
+                  
+                  return availableTeams.length < fieldsWithoutMatches.length * 2;
+                })()}
+                className="w-full px-4 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center justify-center gap-2 font-semibold"
+              >
+                <Play size={20} />
+                Start All Fields
+              </button>
             </div>
 
             {/* Team List */}
@@ -375,93 +633,210 @@ const NextKickApp = () => {
 
           {/* Fields */}
           {getActiveFields().map((field, index) => {
+            const isTimeUp = timerEnded[field.id];
+            const isWinnerStays = getCurrentGameMode() === 'winnerStays';
             return (
-              <div key={field.id} className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
+              <div key={field.id} className={`backdrop-blur-md rounded-xl p-6 border ${
+                isTimeUp 
+                  ? 'bg-red-500/20 border-red-400 animate-pulse' 
+                  : 'bg-white/10 border-white/20'
+              }`}>
                 <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
-                  <Play size={20} />
+                  {isTimeUp ? <Bell size={20} className="text-red-400" /> : <Timer size={20} />}
                   {field.name}
-                  {getCurrentGameMode() === 'overflow' && (
+                  {isTimeUp && (
+                    <span className="text-xs bg-red-500 px-2 py-1 rounded text-white animate-pulse">
+                      TIME UP!
+                    </span>
+                  )}
+                  {!isTimeUp && getCurrentGameMode() === 'overflow' && field.currentMatch && (
                     <span className="text-xs bg-purple-500 px-2 py-1 rounded text-white">OVERFLOW</span>
                   )}
-                  {getCurrentGameMode() === 'winnerStays' && field.currentMatch && (
+                  {!isTimeUp && isWinnerStays && field.currentMatch && (
                     <span className="text-xs bg-green-500 px-2 py-1 rounded text-white">WINNER STAYS</span>
                   )}
+                  {!isTimeUp && isWinnerStays && field.defendingTeam && !field.currentMatch && (
+                    <span className="text-xs bg-yellow-500 px-2 py-1 rounded text-black">DEFENDING</span>
+                  )}
                 </h2>
+
+                {/* Show defending team info for Winner Stays mode */}
+                {isWinnerStays && field.defendingTeam && !field.currentMatch && (
+                  <div className="mb-4 p-3 bg-yellow-500/20 border border-yellow-400 rounded-lg">
+                    <div className="text-yellow-400 font-semibold text-sm mb-1">🏆 DEFENDING FIELD</div>
+                    <div className="text-white font-medium">{field.defendingTeam.name}</div>
+                    <div className="text-white/70 text-xs">Waiting for challenger...</div>
+                  </div>
+                )}
 
                 {field.currentMatch ? (
                   <div className="space-y-4">
                     <div className="text-center">
-                      <div className="text-3xl font-bold text-white mb-2">
+                      <div className={`text-3xl font-bold mb-2 ${
+                        isTimeUp ? 'text-red-400' : 
+                        timers[field.id] <= 60 ? 'text-yellow-400' : 'text-white'
+                      }`}>
                         {formatTime(timers[field.id] || 0)}
                       </div>
-                      <div className="text-white/70 text-sm">Time Remaining</div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div className="text-center flex-1">
-                        <div className="text-white font-semibold mb-1 text-sm">{field.currentMatch.team1.name}</div>
-                        <div className="text-4xl font-bold text-white mb-2">{field.currentMatch.team1.score}</div>
-                        <button
-                          onClick={() => scoreGoal(field.id, 'team1')}
-                          disabled={!timers[field.id]}
-                          className="px-3 py-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors text-sm"
-                        >
-                          Goal
-                        </button>
-                      </div>
-
-                      <div className="text-white/50 text-xl font-bold mx-2">VS</div>
-
-                      <div className="text-center flex-1">
-                        <div className="text-white font-semibold mb-1 text-sm">{field.currentMatch.team2.name}</div>
-                        <div className="text-4xl font-bold text-white mb-2">{field.currentMatch.team2.score}</div>
-                        <button
-                          onClick={() => scoreGoal(field.id, 'team2')}
-                          disabled={!timers[field.id]}
-                          className="px-3 py-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors text-sm"
-                        >
-                          Goal
-                        </button>
+                      <div className="text-white/70 text-sm">
+                        {isTimeUp ? 'Time Ended - Declare Winner' : 'Time Remaining'}
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-1">
-                      <button
-                        onClick={() => handleMatchEnd(field.id, 'team1')}
-                        className="px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-xs"
-                      >
-                        {field.currentMatch.team1.name} Wins
-                      </button>
-                      <button
-                        onClick={() => handleMatchEnd(field.id, 'draw')}
-                        className="px-2 py-1 bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition-colors text-xs"
-                      >
-                        Tied - Challenger Wins
-                      </button>
-                      <button
-                        onClick={() => handleMatchEnd(field.id, 'team2')}
-                        className="px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-xs"
-                      >
-                        {field.currentMatch.team2.name} Wins
-                      </button>
+                    <div className="text-center mb-4">
+                      <div className="text-2xl font-bold text-white mb-1">
+                        {field.currentMatch.team1.name} vs {field.currentMatch.team2.name}
+                      </div>
+                      <div className="text-white/60 text-sm">
+                        {isWinnerStays ? 
+                          `${field.currentMatch.team1.name} (Defender) vs ${field.currentMatch.team2.name} (Challenger)` : 
+                          'Match in Progress'
+                        }
+                      </div>
                     </div>
+
+                    {/* Timer Controls - Only show when timer is running */}
+                    {!isTimeUp && (
+                      <div className="grid grid-cols-3 gap-2 mb-4">
+                        <button
+                          onClick={() => extendTime(field.id, 1)}
+                          className="px-2 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-xs"
+                        >
+                          +1 Min
+                        </button>
+                        <button
+                          onClick={() => extendTime(field.id, 2)}
+                          className="px-2 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-xs"
+                        >
+                          +2 Min
+                        </button>
+                        <button
+                          onClick={() => extendTime(field.id, 5)}
+                          className="px-2 py-1 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-xs"
+                        >
+                          +5 Min
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Winner Declaration - Only show when time is up */}
+                    {isTimeUp && (
+                      <div className="space-y-3">
+                        <div className="text-center text-yellow-400 text-sm font-semibold">
+                          ⚠️ TIME UP - SELECT WINNER ⚠️
+                        </div>
+                        <div className={`grid grid-cols-3 gap-2 ${!pendingResults[field.id] ? 'animate-pulse' : ''}`}>
+                          <button
+                            onClick={() => handleMatchEnd(field.id, 'team1')}
+                            disabled={!!pendingResults[field.id]}
+                            className={`px-3 py-3 text-white rounded-lg transition-colors text-sm font-medium ${
+                              pendingResults[field.id]?.result === 'team1' 
+                                ? 'bg-green-800 border-2 border-green-400' 
+                                : pendingResults[field.id] 
+                                  ? 'bg-gray-600 opacity-50' 
+                                  : 'bg-green-600 hover:bg-green-700 border-2 border-green-400'
+                            }`}
+                          >
+                            {field.currentMatch.team1.name} Wins
+                            {isWinnerStays && <div className="text-xs">(Defender)</div>}
+                          </button>
+                          <button
+                            onClick={() => handleMatchEnd(field.id, 'draw')}
+                            disabled={!!pendingResults[field.id]}
+                            className={`px-3 py-3 text-white rounded-lg transition-colors text-sm font-medium ${
+                              pendingResults[field.id]?.result === 'draw' 
+                                ? 'bg-orange-800 border-2 border-orange-400' 
+                                : pendingResults[field.id] 
+                                  ? 'bg-gray-600 opacity-50' 
+                                  : 'bg-orange-600 hover:bg-orange-700 border-2 border-orange-400'
+                            }`}
+                          >
+                            Tie - Challenger Wins
+                            <div className="text-xs">({field.currentMatch.team2.name})</div>
+                          </button>
+                          <button
+                            onClick={() => handleMatchEnd(field.id, 'team2')}
+                            disabled={!!pendingResults[field.id]}
+                            className={`px-3 py-3 text-white rounded-lg transition-colors text-sm font-medium ${
+                              pendingResults[field.id]?.result === 'team2' 
+                                ? 'bg-green-800 border-2 border-green-400' 
+                                : pendingResults[field.id] 
+                                  ? 'bg-gray-600 opacity-50' 
+                                  : 'bg-green-600 hover:bg-green-700 border-2 border-green-400'
+                            }`}
+                          >
+                            {field.currentMatch.team2.name} Wins
+                            {isWinnerStays && <div className="text-xs">(Challenger)</div>}
+                          </button>
+                        </div>
+                        {pendingResults[field.id] && (
+                          <div className="text-center text-green-400 text-xs font-semibold">
+                            ✓ Winner Selected - Waiting for other fields
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {isTimeUp && (
+                      <div className="text-center text-yellow-400 text-sm font-semibold mt-3">
+                        {(() => {
+                          const currentMode = getCurrentGameMode();
+                          const nextField = getNextFieldForWinner(field.id);
+                          
+                          if (currentMode === 'overflow') {
+                            return "Winner and loser both go to back of queue";
+                          } else if (currentMode === 'winnerStays') {
+                            return "Winner stays on this field • Loser goes to back of queue";
+                          } else if (currentMode === 'kingOfHill') {
+                            if (nextField === field.name) {
+                              return `Winner stays on ${field.name} • Loser goes to back of queue`;
+                            } else {
+                              return `Winner moves to ${nextField} • Loser goes to back of queue`;
+                            }
+                          }
+                          return "";
+                        })()}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <div className="text-white/60 mb-4 text-sm">No active match</div>
+                    <div className="text-white/60 mb-4 text-sm">
+                      {isWinnerStays && field.defendingTeam 
+                        ? `${field.defendingTeam.name} is defending - need challenger`
+                        : 'No active match'
+                      }
+                    </div>
                     <button
-                      onClick={() => startMatch(field.id)}
-                      disabled={getNextAvailableTeams().length < 2}
+                      onClick={() => startMatchWithDefender(field.id)}
+                      disabled={(() => {
+                        if (isWinnerStays && field.defendingTeam) {
+                          return getNextAvailableTeams().length < 1;
+                        }
+                        return getNextAvailableTeams().length < 2;
+                      })()}
                       className="px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-gray-500 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-2 mx-auto text-sm"
                     >
                       <Play size={16} />
-                      Start Match
+                      {isWinnerStays && field.defendingTeam 
+                        ? 'Challenge Defender'
+                        : 'Start Timed Match'
+                      }
                     </button>
-                    {getNextAvailableTeams().length < 2 && (
-                      <div className="text-white/60 text-xs mt-2">
-                        Need 2+ available teams
-                      </div>
-                    )}
+                    {(() => {
+                      if (isWinnerStays && field.defendingTeam) {
+                        return getNextAvailableTeams().length < 1 && (
+                          <div className="text-white/60 text-xs mt-2">
+                            Need 1+ challenger team
+                          </div>
+                        );
+                      }
+                      return getNextAvailableTeams().length < 2 && (
+                        <div className="text-white/60 text-xs mt-2">
+                          Need 2+ available teams
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -539,7 +914,7 @@ const NextKickApp = () => {
             {/* Game Mode Info */}
             <div className="mt-4 p-3 bg-white/5 rounded-lg">
               <div className="text-white/80 text-sm">
-                <strong className={getCurrentGameMode() === 'overflow' ? 'text-purple-400' : ''}>
+                <strong className={getCurrentGameMode() === 'overflow' ? 'text-purple-400' : getCurrentGameMode() === 'winnerStays' ? 'text-green-400' : ''}>
                   {modeInfo.title}
                 </strong>
                 <ul className="mt-1 text-xs space-y-1">
@@ -554,7 +929,6 @@ const NextKickApp = () => {
       </div>
     </div>
   );
-
 };
 
 export default NextKickApp;
